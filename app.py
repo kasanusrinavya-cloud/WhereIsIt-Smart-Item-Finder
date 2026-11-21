@@ -1,237 +1,238 @@
-
-import os
-import uuid
-import gradio as gr
+import streamlit as st
 import chromadb
-from sentence_transformers import SentenceTransformer
+import uuid
+import os
 
-# ---------------- CONFIGURATION ----------------
-DB_PATH = os.getenv("CHROMA_DB_PATH", "./chroma_db")
-os.makedirs(DB_PATH, exist_ok=True)
-
-client = chromadb.PersistentClient(path=DB_PATH)
-collection = client.get_or_create_collection(
-    name="personal_items",
-    metadata={"hnsw:space": "cosine"}
+# ---------------- CONFIG ----------------
+st.set_page_config(
+    page_title="WhereIsIt? Smart Item Finder",
+    page_icon="🔎",
+    layout="wide"
 )
 
-model = SentenceTransformer("all-MiniLM-L6-v2")
+DB_PATH = "./chroma_db"
 
-# ---------------- INITIAL DATA ----------------
-sample_items = [
-    ("USB-C Charger", "Electronics", "White fast charger for Android", "Study table drawer"),
-    ("Headphones", "Electronics", "Wireless headphones for listening to music", "Bedroom shelf"),
-    ("College ID Card", "College", "Student identification card", "Blue wallet"),
-    ("Notebook", "Stationery", "DBMS class notes notebook", "College bag"),
-    ("Water Bottle", "Daily Essentials", "Reusable water bottle", "Kitchen counter"),
-    ("Umbrella", "Daily Essentials", "Black umbrella for rainy weather", "Behind main door"),
-    ("Power Bank", "Electronics", "Portable battery for charging devices", "Handbag"),
-    ("Pen Drive", "Electronics", "USB flash drive for storing files", "Laptop bag pocket"),
-    ("Calculator", "Stationery", "Calculator for engineering calculations", "Study table"),
-    ("Spectacles", "Personal", "Eyeglasses for reading and vision", "Bedside table"),
-    ("Keys", "Daily Essentials", "House keys", "Key holder near entrance"),
-    ("Mouse", "Electronics", "Wireless computer mouse", "Computer desk"),
-    ("Sticky Notes", "Stationery", "Small notes used for reminders", "Study table organizer"),
-    ("Lunch Box", "Daily Essentials", "Food container for carrying lunch", "Kitchen cabinet"),
-    ("Laptop", "Electronics", "Laptop used for programming and projects", "Laptop desk")
-]
+# ---------------- DATABASE ----------------
+client = chromadb.PersistentClient(path=DB_PATH)
 
-if collection.count() == 0:
-    for item in sample_items:
-        item_id = str(uuid.uuid4())
-        text = " ".join(item)
-        collection.add(
-            ids=[item_id],
-            documents=[text],
-            embeddings=[model.encode(text).tolist()],
-            metadatas=[{
-                "name": item[0],
-                "category": item[1],
-                "description": item[2],
-                "location": item[3]
-            }]
-        )
+collection = client.get_or_create_collection(
+    name="personal_items"
+)
 
-# ---------------- HELPERS ----------------
-def all_items():
-    data = collection.get()
-    rows = []
-    for m in data["metadatas"]:
-        rows.append([m["name"], m["category"], m["description"], m["location"]])
-    return rows
-
-def dashboard():
-    items = all_items()
-    categories = {}
-    for item in items:
-        categories[item[1]] = categories.get(item[1], 0) + 1
-
-    category_text = "\n".join(
-        [f"- **{category}:** {count}" for category, count in categories.items()]
-    )
-    return f"## Total Items: {len(items)}\n\n{category_text}"
-
-def search_items(query):
-    if not query.strip():
-        return "Enter a search query first."
-
-    result = collection.query(
-        query_embeddings=[model.encode(query).tolist()],
-        n_results=min(5, collection.count())
-    )
-
-    output = []
-    for metadata, distance in zip(
-        result["metadatas"][0], result["distances"][0]
-    ):
-        similarity = max(0, 1 - distance)
-        if similarity >= 0.25:
-            output.append(
-                f"### {metadata['name']}\n"
-                f"📍 **Location:** {metadata['location']}\n"
-                f"📂 **Category:** {metadata['category']}\n"
-                f"📝 {metadata['description']}\n"
-                f"🎯 Match score: {similarity:.2f}\n"
-            )
-
-    return "\n---\n".join(output) if output else "No close matches found."
+# ---------------- FUNCTIONS ----------------
 
 def add_item(name, category, description, location):
-    if not all([name, category, description, location]):
-        return "Please fill in all fields."
+    item_id = str(uuid.uuid4())
 
-    text = f"{name} {category} {description} {location}"
     collection.add(
-        ids=[str(uuid.uuid4())],
-        documents=[text],
-        embeddings=[model.encode(text).tolist()],
+        ids=[item_id],
+        documents=[description],
         metadatas=[{
             "name": name,
             "category": category,
-            "description": description,
             "location": location
         }]
     )
-    return f"Successfully added **{name}**!"
+    return True
 
-def inventory():
-    rows = all_items()
-    if not rows:
-        return "Inventory is empty."
-    return "\n".join(
-        [f"**{r[0]}** | {r[1]} | {r[2]} | 📍 {r[3]}" for r in rows]
+
+def search_items(query):
+    if collection.count() == 0:
+        return []
+
+    results = collection.query(
+        query_texts=[query],
+        n_results=min(5, collection.count())
     )
 
-def update_item(old_name, new_name, category, description, location):
-    if not old_name:
-        return "Enter the current item name."
+    matches = []
+
+    if results["ids"]:
+        for i in range(len(results["ids"][0])):
+            metadata = results["metadatas"][0][i]
+            distance = results["distances"][0][i]
+
+            matches.append({
+                "name": metadata["name"],
+                "category": metadata["category"],
+                "location": metadata["location"],
+                "description": results["documents"][0][i],
+                "distance": distance
+            })
+
+    return matches
+
+
+def get_items():
+    if collection.count() == 0:
+        return []
 
     data = collection.get()
-    found = None
-    for i, metadata in enumerate(data["metadatas"]):
-        if metadata["name"].lower() == old_name.lower():
-            found = data["ids"][i]
-            break
 
-    if found is None:
-        return f"Item **{old_name}** not found."
+    items = []
 
-    if not all([new_name, category, description, location]):
-        return "Fill in all updated details."
+    for i in range(len(data["ids"])):
+        items.append({
+            "id": data["ids"][i],
+            "name": data["metadatas"][i]["name"],
+            "category": data["metadatas"][i]["category"],
+            "location": data["metadatas"][i]["location"],
+            "description": data["documents"][i]
+        })
 
-    text = f"{new_name} {category} {description} {location}"
-    collection.update(
-        ids=[found],
-        documents=[text],
-        embeddings=[model.encode(text).tolist()],
-        metadatas=[{
-            "name": new_name,
-            "category": category,
-            "description": description,
-            "location": location
-        }]
+    return items
+
+
+def delete_item(item_id):
+    collection.delete(ids=[item_id])
+
+
+# ---------------- UI ----------------
+
+st.title("🔎 WhereIsIt?")
+st.caption("Smart Personal Item Finder powered by ChromaDB & Semantic Search")
+
+items = get_items()
+
+# Dashboard
+st.subheader("📊 Dashboard")
+
+col1, col2, col3 = st.columns(3)
+
+col1.metric("Total Items", len(items))
+col2.metric("Categories", len(set(i["category"] for i in items)))
+col3.metric("Locations", len(set(i["location"] for i in items)))
+
+st.divider()
+
+# Tabs
+tab1, tab2, tab3, tab4 = st.tabs([
+    "🔍 Search",
+    "➕ Add Item",
+    "📦 Inventory",
+    "🗑️ Delete Item"
+])
+
+# ---------------- SEARCH ----------------
+
+with tab1:
+    st.subheader("Find Your Belongings")
+
+    query = st.text_input(
+        "What are you looking for?",
+        placeholder="Example: Where is the thing I use to charge my phone?"
     )
-    return f"Successfully updated **{old_name}**."
 
-def delete_item(name):
-    if not name:
-        return "Enter an item name."
+    if st.button("Search", key="search_button"):
+        if query.strip():
+            results = search_items(query)
 
-    data = collection.get()
-    for i, metadata in enumerate(data["metadatas"]):
-        if metadata["name"].lower() == name.lower():
-            collection.delete(ids=[data["ids"][i]])
-            return f"Successfully deleted **{name}**."
+            if results:
+                st.success(f"Found {len(results)} matching items")
 
-    return f"Item **{name}** not found."
+                for item in results:
+                    with st.container(border=True):
+                        st.markdown(f"### 📌 {item['name']}")
+                        st.write(f"**Category:** {item['category']}")
+                        st.write(f"**Location:** 📍 {item['location']}")
+                        st.write(f"**Description:** {item['description']}")
+            else:
+                st.info("No items found. Try another search.")
 
-# ---------------- GRADIO UI ----------------
-with gr.Blocks(title="WhereIsIt? Smart Item Finder", theme=gr.themes.Soft()) as app:
+# ---------------- ADD ITEM ----------------
 
-    gr.Markdown("""
-    # 🔎 WhereIsIt?
-    ### Smart Personal Item Finder using Vector Database & Semantic Search
-    Find belongings using natural language instead of remembering exact item names.
-    """)
+with tab2:
+    st.subheader("Add a New Item")
 
-    with gr.Tab("Dashboard"):
-        dashboard_output = gr.Markdown()
-        refresh_dashboard = gr.Button("Refresh Dashboard")
-        app.load(dashboard, outputs=dashboard_output)
-        refresh_dashboard.click(dashboard, outputs=dashboard_output)
-
-    with gr.Tab("Smart Search"):
-        search_query = gr.Textbox(
-            label="What are you looking for?",
-            placeholder="Example: I need something when it rains"
+    with st.form("add_form"):
+        name = st.text_input("Item Name")
+        category = st.selectbox(
+            "Category",
+            [
+                "Electronics",
+                "Stationery",
+                "Daily Essentials",
+                "College",
+                "Personal",
+                "Other"
+            ]
         )
-        search_button = gr.Button("Search", variant="primary")
-        search_output = gr.Markdown()
-        search_button.click(search_items, inputs=search_query, outputs=search_output)
-        search_query.submit(search_items, inputs=search_query, outputs=search_output)
+        description = st.text_area("Description")
+        location = st.text_input("Where did you keep it?")
 
-    with gr.Tab("Add Item"):
-        name = gr.Textbox(label="Item Name")
-        category = gr.Textbox(label="Category")
-        description = gr.Textbox(label="Description")
-        location = gr.Textbox(label="Where did you place it?")
-        add_button = gr.Button("Add Item", variant="primary")
-        add_output = gr.Markdown()
-        add_button.click(
-            add_item,
-            inputs=[name, category, description, location],
-            outputs=add_output
-        )
+        submitted = st.form_submit_button("Add Item")
 
-    with gr.Tab("Inventory"):
-        inventory_button = gr.Button("View Inventory")
-        inventory_output = gr.Markdown()
-        inventory_button.click(inventory, outputs=inventory_output)
+        if submitted:
+            if name and description and location:
+                add_item(name, category, description, location)
+                st.success(f"Successfully added {name}!")
+                st.rerun()
+            else:
+                st.warning("Please fill in all fields.")
 
-    with gr.Tab("Edit Item"):
-        old_name = gr.Textbox(label="Current Item Name")
-        new_name = gr.Textbox(label="Updated Item Name")
-        new_category = gr.Textbox(label="Updated Category")
-        new_description = gr.Textbox(label="Updated Description")
-        new_location = gr.Textbox(label="Updated Location")
-        edit_button = gr.Button("Update Item", variant="primary")
-        edit_output = gr.Markdown()
-        edit_button.click(
-            update_item,
-            inputs=[old_name, new_name, new_category, new_description, new_location],
-            outputs=edit_output
+# ---------------- INVENTORY ----------------
+
+with tab3:
+    st.subheader("All Belongings")
+
+    items = get_items()
+
+    if items:
+        selected_category = st.selectbox(
+            "Filter by category",
+            ["All"] + sorted(set(i["category"] for i in items))
         )
 
-    with gr.Tab("Delete Item"):
-        delete_name = gr.Textbox(label="Item Name to Delete")
-        delete_button = gr.Button("Delete Item", variant="stop")
-        delete_output = gr.Markdown()
-        delete_button.click(delete_item, inputs=delete_name, outputs=delete_output)
+        filtered_items = items
 
-    gr.Markdown("---")
-    gr.Markdown("**Project:** WhereIsIt? | **Technology:** ChromaDB, Python, Sentence Transformers, Gradio")
+        if selected_category != "All":
+            filtered_items = [
+                i for i in items
+                if i["category"] == selected_category
+            ]
 
-app.launch(
-    server_name="0.0.0.0",
-    server_port=int(os.environ.get("PORT", 7860))
-)
+        st.write(f"Showing {len(filtered_items)} items")
+
+        for item in filtered_items:
+            with st.container(border=True):
+                st.markdown(f"### {item['name']}")
+                st.write(f"**Category:** {item['category']}")
+                st.write(f"**Location:** {item['location']}")
+                st.write(f"**Description:** {item['description']}")
+    else:
+        st.info("Your inventory is empty. Add your first item!")
+
+# ---------------- DELETE ----------------
+
+with tab4:
+    st.subheader("Remove an Item")
+
+    items = get_items()
+
+    if items:
+        selected_item = st.selectbox(
+            "Select item to delete",
+            items,
+            format_func=lambda x: f"{x['name']} — {x['location']}"
+        )
+
+        if st.button("Delete Selected Item", type="primary"):
+            delete_item(selected_item["id"])
+            st.success("Item deleted!")
+            st.rerun()
+    else:
+        st.info("No items available to delete.")
+
+st.divider()
+
+st.caption("WhereIsIt? | Smart Item Finder | Powered by ChromaDB")
+
+    
+
+   
+    
+
+
+       
+        
+            

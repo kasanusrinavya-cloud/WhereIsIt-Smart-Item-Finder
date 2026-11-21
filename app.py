@@ -231,4 +231,7 @@ with gr.Blocks(title="WhereIsIt? Smart Item Finder", theme=gr.themes.Soft()) as 
     gr.Markdown("---")
     gr.Markdown("**Project:** WhereIsIt? | **Technology:** ChromaDB, Python, Sentence Transformers, Gradio")
 
-app.launch()
+app.launch(
+    server_name="0.0.0.0",
+    server_port=int(os.environ.get("PORT", 7860))
+)
